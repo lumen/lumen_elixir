@@ -36,8 +36,8 @@ defmodule Mix.Tasks.Compile.Lumen do
     # Files to remove are the ones in the manifest
     # but they no longer have a source
     removed =
-      MapSet.new(beams)
-      |> MapSet.difference(MapSet.new(Enum.map(entries, fn {dest, _} -> dest end)))
+      MapSet.new(Enum.map(entries, fn {_, dest} -> dest end))
+      |> MapSet.difference(MapSet.new(beams))
 
     # Remove manifest entries with no source
     Enum.each(removed, &File.rm/1)
@@ -77,9 +77,14 @@ defmodule Mix.Tasks.Compile.Lumen do
   end
 
   defp do_compile([{input, output} | rest], timestamp, verbose, {status, entries, errors}) do
-    with {:ok, forms} <- extract_abstract_code(input),
-         {:ok, erl} <- to_erlang_source(forms) do
-      File.write!(output, erl)
+    with {:ok, forms} <- extract_abstract_code(input) do
+
+      # Format the forms to the same listing format as +dabstr
+      {:ok, pid} = StringIO.open("")
+      :beam_listing.module(pid, forms)
+      {:ok, {_, abstr}} = StringIO.close(pid)
+
+      File.write!(output, abstr)
       verbose && Mix.shell().info("Compiled #{input}")
       do_compile(rest, timestamp, verbose, {status, [{output, []} | entries], errors})
     else
@@ -99,16 +104,13 @@ defmodule Mix.Tasks.Compile.Lumen do
   defp do_compile([], _timestamp, _verbose, result), do: result
 
   defp extract_abstract_code(path) do
-    case :beam_lib.chunks(String.to_charlist(path), [:abstract_code]) do
-      {:ok, {_mod, [{:raw_abstract_v1, forms}]}} ->
+    chunks = :beam_lib.chunks(String.to_charlist(path), [:abstract_code])
+    case chunks do
+      {:ok, {_mod, [abstract_code: {:raw_abstract_v1, forms}]}} ->
         {:ok, forms}
       {:error, mod, reason} ->
         {:error, mod.format_error(reason)}
     end
-  end
-
-  defp to_erlang_source(forms) when is_list(forms) do
-    :erl_prettypr.format(:erl_syntax.form_list(forms))
   end
 
   defp extract_targets(beams, opts) do
@@ -118,7 +120,7 @@ defmodule Mix.Tasks.Compile.Lumen do
       app = app_name_from_path(beam)
       module = module_name_from_path(beam)
       dest_dir = Path.join([Mix.Project.build_path(), "lumen", app, "src"])
-      target = Path.join(dest_dir, module <> ".erl")
+      target = Path.join(dest_dir, module <> ".abstr")
 
       # Ensure target dir exists
       :ok = File.mkdir_p!(dest_dir)
